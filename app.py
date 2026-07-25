@@ -13,7 +13,11 @@ except ImportError:  # pragma: no cover - optional dependency
         return False
 
 from flask import Flask, render_template, request
-from openai import OpenAI
+
+try:
+    from openai import OpenAI
+except ImportError:  # pragma: no cover - optional dependency
+    OpenAI = None
 
 # Loading Environment Variables
 load_dotenv()
@@ -98,42 +102,72 @@ def generate_local_ai_response(prompt):
     )
 
 
+def get_llm_provider():
+    if os.getenv("OPENAI_API_KEY"):
+        return "openai"
+    if os.getenv("GROQ_API_KEY"):
+        return "groq"
+    return "local"
+
+
 def build_ai_response(prompt):
     if not prompt or not str(prompt).strip():
         return "Please enter a question so I can help you."
 
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
+    provider = get_llm_provider()
+    if provider == "local":
         return generate_local_ai_response(prompt)
 
     try:
-        client = OpenAI(api_key=api_key, timeout=60)
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a warm, helpful assistant for a student registration website. "
-                        "Answer clearly, politely, and concisely. "
-                        "Use friendly formatting with short paragraphs or bullet points when helpful."
-                    ),
-                },
-                {"role": "user", "content": str(prompt).strip()},
-            ],
-            temperature=0.8,
-            max_tokens=260,
-        )
-        return response.choices[0].message.content.strip()
+        if provider == "openai" and OpenAI is not None:
+            client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), timeout=60)
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a warm, helpful assistant for a student registration website. "
+                            "Answer clearly, politely, and concisely. "
+                            "Use friendly formatting with short paragraphs or bullet points when helpful."
+                        ),
+                    },
+                    {"role": "user", "content": str(prompt).strip()},
+                ],
+                temperature=0.8,
+                max_tokens=260,
+            )
+            return response.choices[0].message.content.strip()
+
+        if provider == "groq":
+            import urllib.request
+            import urllib.parse
+            import json
+
+            api_key = os.getenv("GROQ_API_KEY")
+            payload = {
+                "model": "llama-3.1-8b-instant",
+                "messages": [
+                    {"role": "system", "content": "You are a helpful assistant for a student registration website."},
+                    {"role": "user", "content": str(prompt).strip()},
+                ],
+                "temperature": 0.8,
+            }
+            req = urllib.request.Request(
+                "https://api.groq.com/openai/v1/chat/completions",
+                data=json.dumps(payload).encode("utf-8"),
+                method="POST",
+            )
+            req.add_header("Authorization", "Bearer " + api_key)
+            req.add_header("Content-Type", "application/json")
+            with urllib.request.urlopen(req, timeout=30) as response:
+                result = json.load(response)
+                return result["choices"][0]["message"]["content"].strip()
+
+        return generate_local_ai_response(prompt)
     except Exception as exc:
         print(f"AI request failed: {exc}")
-        error_text = str(exc)
-        if "401" in error_text or "invalid_api_key" in error_text.lower() or "api key" in error_text.lower():
-            return generate_local_ai_response(prompt)
-        return (
-            "The AI service is currently unavailable, but your website is working. "
-            "Please check the OpenAI API key or try again shortly."
-        )
+        return generate_local_ai_response(prompt)
 
 
 # Making route for home page
